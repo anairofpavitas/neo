@@ -1520,3 +1520,7 @@ html[lang^="el"] .book.cv-fat .b-line.b-ital,
 html[lang^="el"] .book.cv-cinzel .b-title {
   font-family: Georgia, "Times New Roman", serif;
 }
+
+/* FORK: beats — the outline's third level (i, ii, iii), one step past sections */
+.ol-beat { margin-left: 80px; }
+.ol-beat .ol-text:empty::before { content: 'What happens in this beat…'; }

@@ -2601,6 +2601,7 @@ function wireChapterBody(body, chId) {
       const secId = ghost.dataset.secId;
       if (secId && !(secId in ghostWas)) ghostWas[secId] = ghost.textContent;
       ghost.classList.remove('ghost');
+      forkKeepSceneBreaks(body); // FORK: beats
     }
   });
   // …and when undo brings a ghost's words back, the ghost comes back with
@@ -5534,16 +5535,19 @@ function renderOutline(focusTarget) {
       book.chapterNotes[chId] || ''));
     (book.sectionNotes[chId] || []).forEach((sec, j) => {
       wrap.appendChild(outlineLine('section', chId, sec.id, j, secLetter(j), sec.text));
+      beatsOf(sec).forEach((b, k) => wrap.appendChild(outlineBeatLine(chId, sec.id, b.id, k, b.text))); // FORK: beats
     });
   });
 
   const hint = document.createElement('div');
   hint.className = 'ol-hint';
   hint.textContent = t('Enter — new chapter (or section, from a section line) · Tab — turn a fresh chapter line into a section · Shift+Tab — turn a section into a chapter · Backspace on an empty line removes it');
+  hint.textContent += ' · ' + t('Tab on a section — make it a beat of the scene above · Shift+Tab on a beat — make it a section'); // FORK: beats
   wrap.appendChild(hint);
 
   if (focusTarget) {
     const el = wrap.querySelector(
+      focusTarget.beatId ? `.ol-line[data-beat-id="${focusTarget.beatId}"] .ol-text` : // FORK: beats
       focusTarget.secId
         ? `.ol-line[data-sec-id="${focusTarget.secId}"] .ol-text`
         : `.ol-line.ol-chapter[data-ch-id="${focusTarget.chId}"] .ol-text`
@@ -5654,6 +5658,8 @@ function outlineLine(kind, chId, secId, index, label, text) {
       e.stopPropagation();
       return;
     }
+    if (kind === 'section' && forkSectionKey(e, chId, secId, txt, save)) { e.stopPropagation(); return; } // FORK: beats
+    if (kind === 'chapter' && forkChapterKey(e, chId, txt, save)) { e.stopPropagation(); return; } // FORK: beats
     if (e.key === 'Enter') {
       e.preventDefault();
       const above = caretAtStart();
@@ -5748,6 +5754,7 @@ function outlineLine(kind, chId, secId, index, label, text) {
   // right-click any outline line to delete it
   line.addEventListener('contextmenu', async (e) => {
     e.preventDefault();
+    if (kind === 'section' && await forkSectionMenu(chId, secId)) return; // FORK: beats
     if (kind === 'chapter') {
       await chapterMenu(chId, e.clientX, e.clientY, line);
     } else {
@@ -5783,7 +5790,7 @@ function syncGhosts(chId) {
   const body = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
   if (!body) return;
   const list = (book.sectionNotes && book.sectionNotes[chId]) || [];
-  const keep = new Set(list.map((s) => s.id));
+  const keep = new Set(list.flatMap((s) => [s.id, ...beatsOf(s).map((b) => b.id)])); // FORK: beats
 
   const breakFor = (secId) => body.querySelector(`p.scene-break[data-sec-brk="${secId}"]`);
 
@@ -5796,6 +5803,7 @@ function syncGhosts(chId) {
       p.remove();
     }
   });
+  forkKeepSceneBreaks(body, list); // FORK: beats
 
   // 2. Pull all still-ghost paragraphs out, then re-append in outline order
   //    so the ghosts always mirror the outline's sequence
@@ -5804,28 +5812,348 @@ function syncGhosts(chId) {
     if (brk) brk.remove();
     p.remove();
   }
-  for (const sec of list) {
-    // written over already? Leave it alone
-    const written = body.querySelector(`p[data-sec-id="${sec.id}"]:not(.ghost)`);
-    if (written) continue;
-    if (!sec.text) continue;
-    // *** between this ghost and whatever comes before it
-    const hasContent = body.innerText.trim() !== '';
-    if (hasContent && !(body.lastElementChild && body.lastElementChild.classList.contains('scene-break'))) {
-      const brk = document.createElement('p');
-      brk.className = 'scene-break';
-      brk.dataset.secBrk = sec.id;
-      brk.textContent = '***';
-      body.appendChild(brk);
-    }
-    const p = document.createElement('p');
-    p.className = 'ghost';
-    p.dataset.secId = sec.id;
-    p.textContent = sec.text;
-    body.appendChild(p);
-  }
+  forkEmitScenes(body, list); // FORK: beats — replaces the per-section loop
   syncChapter(body, chId);
 }
+
+/* ================================================================== */
+/*  FORK: BEATS                                                        */
+/*  A third outline level under each section: i, ii, iii. Beats live   */
+/*  on the section objects (sectionNotes[chId][n].beats) and become    */
+/*  ghosts that carry data-sec-id like section ghosts do, so official  */
+/*  NEO clears them cleanly and exports strip them the same way.       */
+/* ================================================================== */
+
+function beatsOf(sec) { return (sec && sec.beats) || []; }
+
+function beatNumeral(i) {
+  let n = i + 1, out = '';
+  for (const [v, r] of [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'],
+    [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']]) {
+    while (n >= v) { out += r; n -= v; }
+  }
+  return out;
+}
+
+const sceneIds = (sec) => [sec.id, ...beatsOf(sec).map((b) => b.id)];
+
+// real words written over a section's or beat's ghost
+function forkHasProse(chId, id) {
+  return [...cleanChapterEl(chId).querySelectorAll(`p[data-sec-id="${id}"]`)].some((p) => p.textContent.trim());
+}
+const forkSceneHasProse = (chId, sec) => sceneIds(sec).some((id) => forkHasProse(chId, id));
+
+// A scene's *** is tagged with the first ghost it stood before. Once any
+// part of that scene is written, the *** belongs to the prose: retag it so
+// neither a re-sync nor an export strips it along with the ghost.
+function forkKeepSceneBreaks(body, list) {
+  if (!list) {
+    const ch = body.closest('.chapter');
+    list = (ch && book.sectionNotes && book.sectionNotes[ch.dataset.id]) || [];
+  }
+  for (const sec of list) {
+    const ids = sceneIds(sec);
+    const written = ids.find((id) => body.querySelector(`p[data-sec-id="${id}"]:not(.ghost)`));
+    if (!written) continue;
+    for (const id of ids) {
+      const brk = body.querySelector(`p.scene-break[data-sec-brk="${id}"]`);
+      if (brk && body.querySelector(`p.ghost[data-sec-id="${id}"]`)) brk.dataset.secBrk = written;
+    }
+  }
+}
+
+// Lay the ghosts back in: each scene's own ghost, then its beats', with no
+// *** between them. A scene nobody has started goes to the end with a ***
+// before it (Hugh's section behavior, unchanged for books without beats).
+// A started scene keeps its unwritten ghosts beside its prose instead.
+function forkEmitScenes(body, list) {
+  const writtenEl = (id) => body.querySelector(`p[data-sec-id="${id}"]:not(.ghost)`);
+  const ghostFor = (it) => {
+    const p = document.createElement('p');
+    p.className = 'ghost';
+    p.dataset.secId = it.id;
+    if (it.of) p.dataset.beatOf = it.of;
+    p.textContent = it.text;
+    return p;
+  };
+  const scenes = list.map((sec) => {
+    const items = [{ id: sec.id, text: sec.text },
+      ...beatsOf(sec).map((b) => ({ id: b.id, text: b.text, of: sec.id }))];
+    items.forEach((it) => { it.el = writtenEl(it.id); });
+    return items;
+  });
+  const firstInDoc = (els) => els.reduce((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_PRECEDING ? b : a));
+
+  // started scenes first, so none of their ghosts land inside an unstarted
+  // scene that's appended to the end
+  for (const pass of ['started', 'unstarted']) scenes.forEach((items, n) => {
+    const started = items.some((it) => it.el);
+    if (started !== (pass === 'started')) return;
+    if (!started) {
+      let first = true;
+      for (const it of items) {
+        if (!it.text) continue;
+        // *** between this scene and whatever comes before it
+        const hasContent = body.innerText.trim() !== '';
+        if (first && hasContent && !(body.lastElementChild && body.lastElementChild.classList.contains('scene-break'))) {
+          const brk = document.createElement('p');
+          brk.className = 'scene-break';
+          brk.dataset.secBrk = it.id;
+          brk.textContent = '***';
+          body.appendChild(brk);
+        }
+        first = false;
+        body.appendChild(ghostFor(it));
+      }
+      return;
+    }
+    // where the next started scene begins (at its *** if it has one)
+    const nextStart = () => {
+      for (const later of scenes.slice(n + 1)) {
+        const els = later.map((it) => it.el).filter(Boolean);
+        if (!els.length) continue;
+        const el = firstInDoc(els);
+        const prev = el.previousElementSibling;
+        return prev && prev.classList.contains('scene-break') ? prev : el;
+      }
+      return null;
+    };
+    items.forEach((it, k) => {
+      if (it.el || !it.text) return;
+      const after = items.slice(k + 1).find((x) => x.el);
+      const ref = after ? after.el : nextStart();
+      if (ref) ref.before(ghostFor(it));
+      else body.appendChild(ghostFor(it));
+    });
+  });
+}
+
+// Tab / Shift+Tab / Backspace on a section line, where beats change the
+// answer. Returns true when handled; false hands the key back to Hugh's code.
+function forkSectionKey(e, chId, secId, txt, save) {
+  const list = book.sectionNotes[chId] || [];
+  const i = list.findIndex((s) => s.id === secId);
+  const sec = list[i];
+  if (!sec) return false;
+
+  // Tab: the section becomes the last beat of the scene above it
+  if (e.key === 'Tab' && !e.shiftKey) {
+    e.preventDefault();
+    if (i === 0) { toast(t('The first section of a chapter has no scene above it to join')); return true; }
+    if (forkSceneHasProse(chId, sec)) {
+      toast(t('This scene already has words in it — only unwritten sections can become beats'));
+      return true;
+    }
+    save();
+    const parent = list[i - 1];
+    parent.beats = [...beatsOf(parent), { id: sec.id, text: sec.text }, ...beatsOf(sec)];
+    list.splice(i, 1);
+    scheduleMetaSave();
+    syncGhosts(chId);
+    renderOutline({ beatId: sec.id });
+    return true;
+  }
+
+  // Shift+Tab with beats: the section becomes a chapter, its beats that chapter's sections
+  if (e.key === 'Tab' && e.shiftKey && beatsOf(sec).length) {
+    e.preventDefault();
+    if (beatsOf(sec).some((b) => forkHasProse(chId, b.id))) {
+      toast(t('These beats already have words in them — only unwritten beats can become sections'));
+      return true;
+    }
+    save();
+    list.splice(i, 1);
+    const at = book.chapterOrder.indexOf(chId) + 1;
+    const newId = createChapterAt(at);
+    book.chapterNotes[newId] = sec.text;
+    book.sectionNotes[newId] = sec.beats.map((b) => ({ id: b.id, text: b.text }));
+    scheduleMetaSave();
+    syncGhosts(chId);
+    syncGhosts(newId);
+    renderOutline({ chId: newId });
+    return true;
+  }
+
+  // Backspace on an empty section never silently takes its beats with it
+  if (e.key === 'Backspace' && txt.textContent.trim() === '' && beatsOf(sec).length) {
+    e.preventDefault();
+    toast(t('This section still has beats — remove them first'));
+    return true;
+  }
+  return false;
+}
+
+// Tab / Backspace on a chapter line that has sections. Upstream, turning a
+// chapter into a section (or deleting its empty line) drops the chapter's
+// section notes; here they're carried along as beats instead, so Shift+Tab
+// on a section and Tab back is a clean round trip. Returns true when handled.
+function forkChapterKey(e, chId, txt, save) {
+  const secs = (book.sectionNotes && book.sectionNotes[chId]) || [];
+  if (!secs.length) return false;
+
+  // Tab: the chapter becomes the last section of the story entry above it,
+  // and its sections (with any beats of their own, in order) become its beats
+  if (e.key === 'Tab' && !e.shiftKey) {
+    e.preventDefault();
+    const prevCh = storyBefore(chId);
+    if (!prevCh) { toast(t('The first line has to be a chapter')); return true; }
+    if (countWords(chapterText(chId)) > 0) {
+      toast(t('This chapter already has words in it — only empty chapter lines can become sections'));
+      return true;
+    }
+    save();
+    const beats = secs.flatMap((s) => [{ id: s.id, text: s.text }, ...beatsOf(s)]);
+    const newSec = { id: 'sec-' + Date.now().toString(36), text: txt.textContent.trim(), beats };
+    book.sectionNotes[prevCh] = book.sectionNotes[prevCh] || [];
+    book.sectionNotes[prevCh].push(newSec);
+    deleteChapterQuiet(chId).then(() => {
+      syncGhosts(prevCh);
+      renderOutline({ secId: newSec.id });
+    });
+    return true;
+  }
+
+  // Backspace on an empty chapter line never silently takes its sections with it
+  // (only where upstream would have deleted it)
+  if (e.key === 'Backspace' && txt.textContent.trim() === '' &&
+      book.chapterOrder.filter((c) => isStory(c)).length > 1 && countWords(chapterText(chId)) === 0) {
+    e.preventDefault();
+    toast(t('This chapter still has sections — remove them first'));
+    return true;
+  }
+  return false;
+}
+
+// right-click a section that has beats: say so before deleting
+async function forkSectionMenu(chId, secId) {
+  const sec = (book.sectionNotes[chId] || []).find((s) => s.id === secId);
+  if (!beatsOf(sec).length) return false;
+  const choice = await optionModal(t('Delete this section and its beats?'), null,
+    [{ label: t('Delete section'), desc: t('Removes the outline line, its beats, and their gray ghosts from the manuscript. Written prose is never touched.'), danger: true, value: 'delete' }]);
+  if (choice === 'delete') {
+    book.sectionNotes[chId] = (book.sectionNotes[chId] || []).filter((s) => s.id !== secId);
+    scheduleMetaSave();
+    syncGhosts(chId);
+    renderOutline({ chId });
+  }
+  return true;
+}
+
+function outlineBeatLine(chId, secId, beatId, index, text) {
+  const line = document.createElement('div');
+  line.className = 'ol-line ol-beat';
+  line.dataset.chId = chId;
+  line.dataset.beatId = beatId;
+  line.dataset.beatOf = secId;
+  const num = document.createElement('span');
+  num.className = 'ol-num';
+  num.textContent = beatNumeral(index);
+  const txt = document.createElement('div');
+  txt.className = 'ol-text';
+  txt.contentEditable = 'true';
+  txt.spellcheck = false;
+  txt.textContent = text;
+
+  const parent = () => (book.sectionNotes[chId] || []).find((s) => s.id === secId);
+  const save = () => {
+    const b = beatsOf(parent()).find((x) => x.id === beatId);
+    if (b) b.text = txt.textContent.trim();
+    scheduleMetaSave();
+  };
+  const removeBeat = () => {
+    const sec = parent();
+    if (sec) sec.beats = beatsOf(sec).filter((b) => b.id !== beatId);
+    scheduleMetaSave();
+    syncGhosts(chId);
+  };
+
+  txt.addEventListener('blur', () => {
+    save();
+    syncGhosts(chId);
+    renderNav();
+  });
+
+  // same rule as sections: Enter at the very start of a line with text
+  // puts the new beat above it; anywhere else, below
+  const caretAtStart = () => {
+    if (!txt.textContent.trim()) return false;
+    const sel = window.getSelection();
+    if (!sel.rangeCount || !sel.isCollapsed) return false;
+    const r = sel.getRangeAt(0);
+    if (!txt.contains(r.startContainer)) return false;
+    const head = document.createRange();
+    head.selectNodeContents(txt);
+    head.setEnd(r.startContainer, r.startOffset);
+    return head.toString().length === 0;
+  };
+
+  txt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const above = caretAtStart();
+      save();
+      const sec = parent();
+      if (sec) {
+        sec.beats = beatsOf(sec);
+        const newBeat = { id: 'beat-' + Date.now().toString(36), text: '' };
+        sec.beats.splice(index + (above ? 0 : 1), 0, newBeat);
+        scheduleMetaSave();
+        syncGhosts(chId);
+        renderOutline({ beatId: newBeat.id });
+      }
+    }
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const lines = [...document.querySelectorAll('.ol-line .ol-text')];
+      const next = lines[lines.indexOf(txt) + (e.key === 'ArrowDown' ? 1 : -1)];
+      if (next) {
+        next.focus();
+        const r = document.createRange();
+        r.selectNodeContents(next);
+        r.collapse(false);
+        const s = window.getSelection();
+        s.removeAllRanges(); s.addRange(r);
+      }
+    }
+    if (e.key === 'Tab' && !e.shiftKey) e.preventDefault(); // beats are the deepest level
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault();
+      save();
+      const list = book.sectionNotes[chId] || [];
+      const sec = parent();
+      const b = beatsOf(sec).find((x) => x.id === beatId);
+      if (sec && b) {
+        sec.beats = beatsOf(sec).filter((x) => x.id !== beatId);
+        // same id, so a beat that's already written stays written as a section
+        list.splice(list.indexOf(sec) + 1, 0, { id: b.id, text: b.text });
+        scheduleMetaSave();
+        syncGhosts(chId);
+        renderOutline({ secId: b.id });
+      }
+    }
+    if (e.key === 'Backspace' && txt.textContent.trim() === '') {
+      e.preventDefault();
+      removeBeat();
+      renderOutline({ secId });
+    }
+    e.stopPropagation();
+  });
+
+  line.addEventListener('contextmenu', async (e) => {
+    e.preventDefault();
+    const choice = await optionModal(t('Delete this beat?'), null,
+      [{ label: t('Delete beat'), desc: t('Removes the outline line and its gray ghost from the manuscript. Written prose is never touched.'), danger: true, value: 'delete' }]);
+    if (choice === 'delete') {
+      removeBeat();
+      renderOutline({ secId });
+    }
+  });
+
+  line.appendChild(num);
+  line.appendChild(txt);
+  return line;
+}
+/* FORK: end beats */
 
 let auxDirty = false;
 $('#aux-editor').addEventListener('keydown', (e) => { if (styleKeepScroll(e)) return; smartKeys(e, e.currentTarget); });
