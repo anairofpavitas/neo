@@ -15,11 +15,11 @@
     "package:all": "electron-builder --mac --win --linux"
   },
   "build": {
-    "appId": "com.hughhowey.neo",
-    "productName": "NEO",
+    "appId": "com.pavi.neo",
+    "productName": "NEO Pavi",
     "publish": {
       "provider": "github",
-      "owner": "hughhowey",
+      "owner": "anairofpavitas",
       "repo": "neo"
     },
     "mac": {

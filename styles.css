@@ -1462,3 +1462,7 @@ body.light.bright .nav-gap .ng-plus { color: #5f5b53; border-color: #8f897e; }
 body.light.bright .pop-menu button:disabled { color: #77726a; }
 body.light.bright .show-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.3); }
 body.light.bright .show-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.45); }
+
+/* FORK: beats — the outline's third level (i, ii, iii), one step past sections */
+.ol-beat { margin-left: 80px; }
+.ol-beat .ol-text:empty::before { content: 'What happens in this beat…'; }
