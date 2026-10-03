@@ -2260,6 +2260,7 @@ function renderChapters() {
     body.spellcheck = false; // NEO runs its own spellcheck pass
     if (!story) body.classList.add('no-cap');
     body.innerHTML = chapterHTML[chId] || '<p><br></p>';
+    forkFirstLine(body); // FORK: first ghost
     markDialogueOpening(body);
     if (PAGE_PROMPTS[kind]) {
       body.dataset.ph = PAGE_PROMPTS[kind]();
@@ -2536,6 +2537,7 @@ function focusChapterStart(chId) {
   if (first) nr.setStart(first, 0); // inside the first paragraph, not the container
   else nr.selectNodeContents(nb);
   nr.collapse(true);
+  if (first && first.classList.contains('ghost')) nr.selectNodeContents(first); // FORK: first ghost — land ready to type over it
   const s = window.getSelection();
   s.removeAllRanges();
   s.addRange(nr);
@@ -5288,6 +5290,7 @@ function syncGhosts(chId) {
     p.remove();
   }
   forkEmitScenes(body, list); // FORK: beats — replaces the per-section loop
+  forkFirstLine(body); // FORK: first ghost
   syncChapter(body, chId);
 }
 
@@ -5629,6 +5632,30 @@ function outlineBeatLine(chId, secId, beatId, index, text) {
   return line;
 }
 /* FORK: end beats */
+
+/* FORK: first ghost — a chapter with nothing written yet starts with an
+   empty starter line, and the outline's ghosts land under it. Drop that
+   line so the first ghost is the chapter's first line, click-to-replace
+   like every later scene. Never touches a line with anything in it. */
+function forkFirstLine(body) {
+  const blank = (el) => el.tagName === 'P' && !el.classList.contains('ghost') &&
+    !el.classList.contains('scene-break') && !el.textContent.trim() &&
+    [...el.children].every((c) => c.tagName === 'BR');
+  const kids = [...body.children];
+  if (kids.some((el) => el.classList.contains('ghost'))) {
+    const written = kids.some((el) => !el.classList.contains('ghost') &&
+      !el.classList.contains('scene-break') && !blank(el));
+    if (!written) {
+      for (const el of kids) {
+        if (el.classList.contains('ghost')) break;
+        if (blank(el)) el.remove();
+      }
+    }
+  }
+  // the outline emptied out: leave one line to type on
+  if (!body.querySelector('p')) body.innerHTML = '<p><br></p>';
+}
+/* FORK: end first ghost */
 
 let auxDirty = false;
 $('#aux-editor').addEventListener('keydown', (e) => { if (styleKeepScroll(e)) return; smartKeys(e, e.currentTarget); });

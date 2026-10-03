@@ -1466,3 +1466,9 @@ body.light.bright .show-scrollbar::-webkit-scrollbar-thumb:hover { background: r
 /* FORK: beats — the outline's third level (i, ii, iii), one step past sections */
 .ol-beat { margin-left: 80px; }
 .ol-beat .ol-text:empty::before { content: 'What happens in this beat…'; }
+
+/* FORK: first ghost — a ghost can now be a chapter's first line; keep the
+   drop cap off it (same selector as the cap, plus .ghost, so it wins) */
+body:not(.no-dropcap) .chapter-body:not(.cap-off):not(.no-cap):not(.opens-dialogue) p.ghost:not(.poetry):not(p:not(.poetry) ~ p)::first-letter {
+  font-size: inherit; float: none; line-height: inherit; padding: 0; font-family: inherit;
+}
