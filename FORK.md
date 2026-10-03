@@ -73,6 +73,24 @@ packaged build, check that settings still live in `.../Application Support/NEO`.
 The auto-updater only looks at this fork's GitHub releases. It finds nothing until you
 publish a release, and a release needs a version number higher than upstream's.
 
+### 3. A chapter's first ghost is its first line
+
+Upstream, a chapter with nothing written starts with an empty line, and the outline's
+ghosts land under it. The fork drops that empty line, so the first scene's ghost is the
+chapter's first line and works like every later one: click it, it's selected, type over it.
+
+- Only when the chapter has no written words. A line with anything in it (text, a sticky
+  mark) is never removed.
+- If the outline empties out, one blank line comes back so there's somewhere to type.
+- Jumping to a chapter whose first line is a ghost selects that ghost, so typing replaces it
+  instead of running into it.
+- A ghost in first position never gets the drop cap; the prose that replaces it does.
+- Existing chapters are fixed the next time they load.
+
+Code: `forkFirstLine` after the beats block in `app.js`, called from `syncGhosts` and
+`renderChapters`; one line in `focusChapterStart`; one CSS rule at the end of `styles.css`.
+This is upstream behavior, so it's a candidate PR for Hugh.
+
 ## How official NEO treats a book with beats
 
 - It opens fine and ignores beats. The data stays in `book.json`.
@@ -124,6 +142,7 @@ Then publish your rebased branch: `git push --force-with-lease origin main`.
 - [ ] A book **without** beats: outline, ghosts and `***` look exactly as before.
 - [ ] A book with beats: i/ii/iii show, Tab / Shift+Tab / Enter / Backspace / right-click all work.
 - [ ] Write over a beat ghost; the other ghosts stay.
+- [ ] A chapter with an outline but no prose: the first ghost is the first line, no blank above it.
 - [ ] Export EPUB, DOCX, PDF, MD and TXT: no beat or section text leaks, and no stray `***`.
 - [ ] `package.json` still has `com.pavi.neo`, `NEO Pavi`, `anairofpavitas`.
 - [ ] Packaged build, first launch: saved API keys still work (macOS may ask once for
