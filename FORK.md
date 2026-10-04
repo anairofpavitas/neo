@@ -20,9 +20,15 @@ Story Grid's five commandments per scene.
   - Tab on a section → it becomes the last beat of the section above it (in the same
     chapter). Refused with a toast if that scene or any of its beats has written prose, or
     if it's the chapter's first section. The section's own beats come along after it.
-  - Shift+Tab on a beat → it becomes a section right after its parent scene.
-  - Shift+Tab on a section that has beats → it becomes a chapter; its beats become that
-    chapter's sections. Refused if any of those beats has written prose.
+  - Shift+Tab on a beat → it becomes a section right after its parent scene. The beats
+    after it come along as its beats (upstream's carry rule, one level down). Written ones
+    come too, since the new scene stays in the same chapter as their prose.
+  - Shift+Tab on a section where beats are involved → it becomes a chapter; its beats
+    become that chapter's first sections, followed by the sections that came after it
+    (upstream 1.3.0's rule: B in A B C takes C along), unless any part of those later
+    scenes is already written. Refused if any of its own beats has written prose.
+  - ⌘Z undoes every beat move (new, delete, Tab, Shift+Tab) the way upstream's outline
+    undo does for sections and chapters.
   - Enter on a beat → new beat below (at the very start of a line with text: above).
   - Backspace on an empty beat deletes it. Backspace on an empty section that still has
     beats does nothing but toast — beats are never dropped silently.
@@ -32,8 +38,9 @@ Story Grid's five commandments per scene.
     the chapter with the other unstarted scenes; if already written, it gets no `***` before it.
   - Tab on a chapter line that has sections → it becomes a section of the chapter above, and
     its sections become that section's beats (any beats they had follow them, flattened).
-    So Shift+Tab on a section and Tab back is a lossless round trip. Upstream, this drops the
-    chapter's sections; the fork only changes it when there are sections to lose.
+    Upstream, this drops the chapter's sections; the fork only changes it when there are
+    sections to lose. (Shift+Tab then Tab keeps every line, though sections that were
+    carried along come back as beats. ⌘Z is the exact way back.)
   - Backspace on an empty chapter line that still has sections does nothing but toast.
 - **Manuscript:** a scene's beats appear as gray ghosts right after the scene's ghost, with
   no `***` between beats (`***` still separates scenes). Writing over a beat ghost turns
@@ -126,6 +133,9 @@ If the rebase stops on a conflict:
 1. `git status` shows the files. Conflicts will almost always sit at `// FORK:` lines in
    `renderOutline`, `outlineLine`, `syncGhosts`, the ghost `beforeinput` handler, the end of
    `styles.css`, the `build` block of `package.json`, or `latestReleaseFromGitHub` in `main.js`.
+   In `outlineLine`'s keydown, the fork hooks go right **after** upstream's ⌘Z block.
+   If upstream changes how outline lines behave (keys, undo, carry rules), mirror the change
+   in the beats block so beats keep behaving like sections.
 2. Keep Hugh's new code, then re-apply the one-line FORK hook on top of it.
 3. If Hugh rewrote the per-section loop in `syncGhosts`, compare his new loop with
    `forkEmitScenes` and carry his change over. For books without beats they must behave
@@ -136,7 +146,9 @@ Then publish your rebased branch: `git push --force-with-lease origin main`.
 
 ### Retest checklist after every upstream pull
 
-- [ ] `npm install && npm start` launches.
+- [ ] `npm install && npm test` passes, and `npm run lint` shows no new errors in fork
+      code (upstream has some of its own).
+- [ ] `npm start` launches.
 - [ ] `grep -c "FORK:" app.js` shows the same count as before the pull. Nothing got
       dropped in a conflict.
 - [ ] A book **without** beats: outline, ghosts and `***` look exactly as before.
@@ -147,6 +159,15 @@ Then publish your rebased branch: `git push --force-with-lease origin main`.
 - [ ] `package.json` still has `com.pavi.neo`, `NEO Pavi`, `anairofpavitas`.
 - [ ] Packaged build, first launch: saved API keys still work (macOS may ask once for
       Keychain access, since the build is signed as a different app).
+
+**Don't run `npm run release` or `npm run bundle`.** Those are Hugh's own routines (they
+tag, push and expect his repo). Use the rebuild steps below.
+
+### Sync log
+
+- 2026-10-04: v1.2.2 → v1.3.0 (58 commits). Conflicts: the end of `styles.css` and the
+  `outlineLine` keydown (upstream's new ⌘Z block). Beats adapted to the outline undo and to
+  the Shift+Tab carry rule.
 
 ### Rebuild
 

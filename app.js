@@ -5889,7 +5889,8 @@ function forkEmitScenes(body, list) {
 
   // started scenes first, so none of their ghosts land inside an unstarted
   // scene that's appended to the end
-  for (const pass of ['started', 'unstarted']) scenes.forEach((items, n) => {
+  for (const pass of ['started', 'unstarted']) {
+  scenes.forEach((items, n) => {
     const started = items.some((it) => it.el);
     if (started !== (pass === 'started')) return;
     if (!started) {
@@ -5929,6 +5930,7 @@ function forkEmitScenes(body, list) {
       else body.appendChild(ghostFor(it));
     });
   });
+  }
 }
 
 // Tab / Shift+Tab / Backspace on a section line, where beats change the
@@ -5948,6 +5950,7 @@ function forkSectionKey(e, chId, secId, txt, save) {
       return true;
     }
     save();
+    snapshotStructure('outline section to beat', { outlineFocus: { secId } });
     const parent = list[i - 1];
     parent.beats = [...beatsOf(parent), { id: sec.id, text: sec.text }, ...beatsOf(sec)];
     list.splice(i, 1);
@@ -5957,19 +5960,25 @@ function forkSectionKey(e, chId, secId, txt, save) {
     return true;
   }
 
-  // Shift+Tab with beats: the section becomes a chapter, its beats that chapter's sections
-  if (e.key === 'Tab' && e.shiftKey && beatsOf(sec).length) {
+  // Shift+Tab where beats are involved: the section becomes a chapter and its
+  // beats that chapter's sections. Upstream's rule holds too: the sections after
+  // it come along (B in A B C: B and C make the next chapter) unless any part of
+  // them is already written, in which case they stay with their prose.
+  if (e.key === 'Tab' && e.shiftKey && list.slice(i).some((s) => beatsOf(s).length)) {
     e.preventDefault();
     if (beatsOf(sec).some((b) => forkHasProse(chId, b.id))) {
       toast(t('These beats already have words in them — only unwritten beats can become sections'));
       return true;
     }
     save();
-    list.splice(i, 1);
+    snapshotStructure('outline section to chapter', { outlineFocus: { secId } });
+    const [, ...after] = list.splice(i);
+    const carry = after.length > 0 && !after.some((s) => sceneIds(s).some((id) => sectionWritten(chId, id)));
+    if (!carry) list.push(...after);
     const at = book.chapterOrder.indexOf(chId) + 1;
     const newId = createChapterAt(at);
     book.chapterNotes[newId] = sec.text;
-    book.sectionNotes[newId] = sec.beats.map((b) => ({ id: b.id, text: b.text }));
+    book.sectionNotes[newId] = [...beatsOf(sec).map((b) => ({ id: b.id, text: b.text })), ...(carry ? after : [])];
     scheduleMetaSave();
     syncGhosts(chId);
     syncGhosts(newId);
@@ -6005,6 +6014,7 @@ function forkChapterKey(e, chId, txt, save) {
       return true;
     }
     save();
+    snapshotStructure('outline chapter to section', { outlineFocus: { chId } });
     const beats = secs.flatMap((s) => [{ id: s.id, text: s.text }, ...beatsOf(s)]);
     const newSec = { id: 'sec-' + Date.now().toString(36), text: txt.textContent.trim(), beats };
     book.sectionNotes[prevCh] = book.sectionNotes[prevCh] || [];
@@ -6034,6 +6044,7 @@ async function forkSectionMenu(chId, secId) {
   const choice = await optionModal(t('Delete this section and its beats?'), null,
     [{ label: t('Delete section'), desc: t('Removes the outline line, its beats, and their gray ghosts from the manuscript. Written prose is never touched.'), danger: true, value: 'delete' }]);
   if (choice === 'delete') {
+    snapshotStructure('outline section removed', { outlineFocus: { secId } });
     book.sectionNotes[chId] = (book.sectionNotes[chId] || []).filter((s) => s.id !== secId);
     scheduleMetaSave();
     syncGhosts(chId);
@@ -6090,13 +6101,31 @@ function outlineBeatLine(chId, secId, beatId, index, text) {
     return head.toString().length === 0;
   };
 
+  const here = () => ({ beatId });
+
   txt.addEventListener('keydown', (e) => {
+    // ⌘Z: typing first (the engine's), then outline structure — as on Hugh's lines
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+      const top = undoStack[undoStack.length - 1];
+      if (top && top.outlineFocus) {
+        let engineUndid = false;
+        const heard = () => { engineUndid = true; };
+        txt.addEventListener('beforeinput', heard, { once: true });
+        setTimeout(() => {
+          txt.removeEventListener('beforeinput', heard);
+          if (!engineUndid && undoStack[undoStack.length - 1] === top) structuralUndo();
+        }, 0);
+      }
+      e.stopPropagation();
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       const above = caretAtStart();
       save();
       const sec = parent();
       if (sec) {
+        snapshotStructure('outline new beat', { outlineFocus: here() });
         sec.beats = beatsOf(sec);
         const newBeat = { id: 'beat-' + Date.now().toString(36), text: '' };
         sec.beats.splice(index + (above ? 0 : 1), 0, newBeat);
@@ -6124,11 +6153,16 @@ function outlineBeatLine(chId, secId, beatId, index, text) {
       save();
       const list = book.sectionNotes[chId] || [];
       const sec = parent();
-      const b = beatsOf(sec).find((x) => x.id === beatId);
-      if (sec && b) {
-        sec.beats = beatsOf(sec).filter((x) => x.id !== beatId);
+      const k = beatsOf(sec).findIndex((x) => x.id === beatId);
+      if (sec && k >= 0) {
+        snapshotStructure('outline beat to section', { outlineFocus: here() });
+        // the beats after it come along, as with sections. Written ones too: unlike
+        // a new chapter, the new scene stays in this chapter, right where its prose is
+        const [b, ...after] = sec.beats.splice(k);
         // same id, so a beat that's already written stays written as a section
-        list.splice(list.indexOf(sec) + 1, 0, { id: b.id, text: b.text });
+        const promoted = { id: b.id, text: b.text };
+        if (after.length) promoted.beats = after;
+        list.splice(list.indexOf(sec) + 1, 0, promoted);
         scheduleMetaSave();
         syncGhosts(chId);
         renderOutline({ secId: b.id });
@@ -6136,6 +6170,7 @@ function outlineBeatLine(chId, secId, beatId, index, text) {
     }
     if (e.key === 'Backspace' && txt.textContent.trim() === '') {
       e.preventDefault();
+      snapshotStructure('outline beat removed', { outlineFocus: here() });
       removeBeat();
       renderOutline({ secId });
     }
@@ -6147,6 +6182,7 @@ function outlineBeatLine(chId, secId, beatId, index, text) {
     const choice = await optionModal(t('Delete this beat?'), null,
       [{ label: t('Delete beat'), desc: t('Removes the outline line and its gray ghost from the manuscript. Written prose is never touched.'), danger: true, value: 'delete' }]);
     if (choice === 'delete') {
+      snapshotStructure('outline beat removed', { outlineFocus: here() });
       removeBeat();
       renderOutline({ secId });
     }
